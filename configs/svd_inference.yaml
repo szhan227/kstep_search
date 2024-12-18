@@ -1,0 +1,8 @@
+num_sampling_step: 50
+height: 384
+width: 512
+num_frames: 25
+latent_h: 48
+latent_w: 64
+latent_t: 25
+latent_c: 4

@@ -1,0 +1,20 @@
+num_sampling_step: 50
+height: 480
+width: 640
+num_frames: 93
+latent_h: 52
+latent_w: 68
+latent_t: 24
+latent_c: 8
+model_path: ./checkpoints/any93x640x640_i2v
+cache_dir: ./cache_dir
+model_type: iterative
+ae: WFVAEModel_D8_4x8x8
+ae_path: ./checkpoints/vae
+enhance_video: NULL
+text_encoder_name_1: google/mt5-xxl
+prediction_type: v_prediction
+rescale_betas_zero_snr: False
+
+
+
