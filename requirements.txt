@@ -32,3 +32,4 @@ ftfy
 Jinja2
 einops
 nvitop
+omegaconf
