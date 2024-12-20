@@ -3,7 +3,7 @@ Official Implementation of the paper [Towards Chunk-Wise Generation for Long Vid
 
 <a href='https://arxiv.org/abs/2411.18668'><img src='https://img.shields.io/badge/Paper-Arxiv-red'></a>
 
-Thanks for open-sourced projects [Open-Sora-Plan](https://github.com/PKU-YuanGroup/Open-Sora-Plan), [CogVideoX](https://github.com/THUDM/CogVideo) and [StableVideoDiffusion](https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt).
+Thanks for open-sourced projects [Open-Sora-Plan](https://github.com/PKU-YuanGroup/Open-Sora-Plan), [CogVideoX](https://github.com/THUDM/CogVideo), [StableVideoDiffusion](https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt), and [ConsistI2V](https://github.com/TIGER-AI-Lab/ConsistI2V).
 
 
 ## Requirements
@@ -20,8 +20,8 @@ cd kstep_search
 * CUDA Version >= 12.4
 
 ```
-conda create -n opensora python=3.10 -y
-conda activate opensora
+conda create -n kstep python=3.10 -y
+conda activate kstep
 pip install -r requirements.txt
 ```
 

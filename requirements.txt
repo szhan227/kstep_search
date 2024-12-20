@@ -33,3 +33,8 @@ Jinja2
 einops
 nvitop
 omegaconf
+scikit-learn
+av
+rotary_embedding_torch
+torchmetrics
+torch-fidelity

@@ -3,13 +3,16 @@ import numpy as np
 from diffusers import StableVideoDiffusionPipeline, CogVideoXImageToVideoPipeline
 from diffusers import AnimateDiffPipeline
 from diffusers.utils import load_image, export_to_video, export_to_gif
-from diffusers import DEISMultistepScheduler
+from diffusers import DEISMultistepScheduler, AutoencoderKL, DDIMScheduler
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import rescale_noise_cfg
 from PIL import Image
 from torchvision import transforms
-from transformers import AutoProcessor, CLIPVisionModelWithProjection
+from transformers import AutoProcessor, CLIPVisionModelWithProjection, CLIPTextModel, CLIPTokenizer
 from einops import rearrange
 from opensora.sample.pipeline_iterative import OpenSoraIterativePipeline
+
+from consisti2v.models.videoldm_unet import VideoLDMUNet3DConditionModel
+from consisti2v.pipelines.pipeline_conditional_animation import ConditionalAnimationPipeline
 
 # from dataset import WebVideoDataset
 from tqdm import tqdm
@@ -17,6 +20,7 @@ import os
 import torchvision
 import glob
 from PIL import Image
+import math
 
 from decord import VideoReader
 
@@ -31,7 +35,7 @@ from omegaconf import OmegaConf
 def parse_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--pipe", type=str, default="SVD", help="Choose from SVD, OPEN_SORA_PLAN, COGVIDEOX")
+    parser.add_argument("--pipe", type=str, default="SVD", help="Choose from SVD, OPEN_SORA_PLAN, COGVIDEOX, CONSIST_I2V")
     parser.add_argument("--video_save_dir", type=str, default="./outputs")
     parser.add_argument("--conditional_image_path", type=str, required=True)
     parser.add_argument("--num_chunks", type=int, default=5)
@@ -65,7 +69,6 @@ def get_pipeline(name, device, config=None):
         from opensora.models.diffusion.opensora_v1_3.modeling_inpaint import OpenSoraInpaint_v1_3
         from transformers import AutoTokenizer, MT5EncoderModel, CLIPTextModelWithProjection
 
-        cache_dir = "./cache_dir"
         dtype = torch.float16
 
         weight_dtype = dtype
@@ -110,6 +113,34 @@ def get_pipeline(name, device, config=None):
             transformer=transformer_model, 
         ).to(device)
 
+
+    elif name == "CONSIST_I2V":
+
+        noise_scheduler = DDIMScheduler(**OmegaConf.to_container(config.noise_scheduler_kwargs))
+        tokenizer       = CLIPTokenizer.from_pretrained(config.pretrained_model_path, subfolder="tokenizer", use_safetensors=True)
+        text_encoder    = CLIPTextModel.from_pretrained(config.pretrained_model_path, subfolder="text_encoder")
+        vae             = AutoencoderKL.from_pretrained(config.pretrained_model_path, subfolder="vae", use_safetensors=True)            
+        unet            = VideoLDMUNet3DConditionModel.from_pretrained(
+            config.pretrained_model_path,
+            subfolder="unet",
+            variant=config.unet_additional_kwargs['variant'],
+            temp_pos_embedding=config.unet_additional_kwargs['temp_pos_embedding'],
+            augment_temporal_attention=config.unet_additional_kwargs['augment_temporal_attention'],
+            use_temporal=True,
+            n_frames=16,
+            n_temp_heads=config.unet_additional_kwargs['n_temp_heads'],
+            first_frame_condition_mode=config.unet_additional_kwargs['first_frame_condition_mode'],
+            use_frame_stride_condition=config.unet_additional_kwargs['use_frame_stride_condition'],
+            use_safetensors=True
+        )
+
+        # if is_xformers_available() and int(torch.__version__.split(".")[0]) < 2:
+        #     unet.enable_xformers_memory_efficient_attention()
+
+        pipe = ConditionalAnimationPipeline(
+            vae=vae, text_encoder=text_encoder, tokenizer=tokenizer, unet=unet, scheduler=noise_scheduler)
+
+
     else:
         # Customize your own pipeline here
         raise NotImplementedError("Pipeline is not supported")
@@ -124,9 +155,11 @@ def get_config(name):
         config = OmegaConf.load("./configs/cogvideox_inference.yaml")
     elif name == "OPEN_SORA_PLAN":
         config = OmegaConf.load("./configs/opensoraplan_inference.yaml")
+    elif name == "CONSIST_I2V":
+        config = OmegaConf.load("./configs/consist_i2v_inference.yaml")
     else:
         # Customize your own config here
-        raise NotImplementedError("Config is not supported")
+        raise NotImplementedError("Config is not supported...")
     return config
 
 
@@ -209,6 +242,39 @@ def pipeline_forward(pipe,
         # List of PIL.Image
         frames = [Image.fromarray(frame.cpu().numpy()) for frame in frames]
         return frames
+    
+    elif isinstance(pipe, ConditionalAnimationPipeline):
+
+        first_frames = torch.from_numpy(np.array(conditional_image)).unsqueeze(0).to(pipe.device) # 1 h w c, uint8
+        first_frames = rearrange(first_frames, "b h w c -> b c h w") / 127.5 - 1.0
+
+        frames = pipe(
+            prompt,
+            first_frame_paths     = None,
+            first_frames          = first_frames,
+            num_inference_steps   = num_sampling_steps,
+            guidance_scale_txt    = 7.5,
+            guidance_scale_img    = 1.0,
+            width                 = width,
+            height                = height,
+            video_length          = num_frames,
+            noise_sampling_method = "pyoco_mixed",
+            noise_alpha           = 1.0,
+            eta                   = 0.0,
+            frame_stride          = 3,
+            guidance_rescale      = 0.0,
+            num_videos_per_prompt = 1,
+            use_frameinit         = True,
+            frameinit_noise_level = 850,
+            camera_motion         = None,
+            latents               = latents,
+        ).videos
+
+        frames = frames.to(torch.uint8)[0]
+        frames = rearrange(frames, " c t h w -> t h w c")
+        frames = [Image.fromarray(frame.cpu().numpy()) for frame in frames]
+
+        return frames
         
 
 
@@ -241,7 +307,7 @@ def k_step_sampling(args):
 
     device = "cuda"
 
-    pipeline_name = "SVD"
+    pipeline_name = args.pipe
 
     config = get_config(pipeline_name)
 
@@ -259,7 +325,19 @@ def k_step_sampling(args):
 
     for i in range(args.num_chunks):
 
-        init_noises = [torch.randn((1, config.num_frames, config.latent_c, config.latent_h, config.latent_w), dtype=torch.float16).to(device) for _ in range(5)]
+        if args.pipe == "CONSIST_I2V":
+            init_noises = []
+            for _ in range(5):
+                noise_alpha_squared = 1
+                base_shape = (1, 4, 1, 32, 32)
+                shape = (1, 4, 16, 32, 32)
+                base_latents = torch.randn(base_shape, generator=None, device=args.device, dtype=torch.float32) * math.sqrt((noise_alpha_squared) / (1 + noise_alpha_squared))
+                ind_latents = torch.randn(shape, generator=None, device=args.device, dtype=torch.float32) * math.sqrt(1 / (1 + noise_alpha_squared))
+                latents = base_latents + ind_latents
+                init_noises.append(latents)
+
+        else:
+            init_noises = [torch.randn((1, config.num_frames, config.latent_c, config.latent_h, config.latent_w), dtype=torch.float16).to(device) for _ in range(5)]
         candidate_videos = list()
 
         for j, noise in enumerate(init_noises):
